@@ -60,27 +60,36 @@ var HT=(function(){
       return { m:m, all:g.CPI.map(function(r){ return r.v; }), ex:g.CPILH.map(function(r){ return r.v; }) };
     });
   };
-  /* Samanburður á verðbólgu: samræmd vísitala (Eurostat), Bretland (ONS) og Bandaríkin (BLS) */
-  P.cmp=function(){
-    var eu=getJ("https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/prc_hicp_minr?geo=IS&geo=NO&geo=SE&geo=DK&geo=FI&coicop18=TOTAL&unit=RCH_A&lastTimePeriod=4").then(function(j){
-      var g=j.dimension.geo.category.index, t=Object.keys(j.dimension.time.category.index).sort(), nt=t.length, o={};
-      Object.keys(g).forEach(function(geo){ for(var i=nt-1;i>=0;i--){ var v=j.value[g[geo]*nt+j.dimension.time.category.index[t[i]]]; if(v!=null){ o[geo]={ v:v, m:t[i] }; break; } } });
-      return o;
+  /* Samanburður á verðbólgu: vísitala neysluverðs hvers lands, 12 mánaða breyting, frá hagstofu landsins */
+  function pxLast(url,q){
+    return getJ(url,{ method:"POST", body:JSON.stringify({ query:q, response:{ format:"json" } }) }).then(function(j){
+      return j.data.map(function(d){ return { m:ym(d.key[0]), v:parseFloat(d.values[0]) }; }).filter(function(x){ return !isNaN(x.v); });
     });
-    var uk=getJ("https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7g7/mm23/data").then(function(j){
+  }
+  P.cmp=function(){
+    var C={};
+    C.IS=px("Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px",[sel("Vísitala",["CPI"]),sel("Liður",["change_A"]),sel("Mánuður",["1"],"top")]).then(function(d){ return { v:d[0].v, m:ym(d[0].k[0]) }; });
+    C.NO=pxLast("https://data.ssb.no/api/v0/no/table/14710/",[sel("ContentsCode",["KpiIndMnd"]),sel("Tid",["13"],"top")]).then(function(d){ var a=d[0], b=d[d.length-1]; if(d.length<13) throw new Error("SSB"); return { v:r1((b.v/a.v-1)*100), m:b.m }; });
+    C.SE=pxLast("https://api.scb.se/OV0104/v1/doris/sv/ssd/PR/PR0101/PR0101A/KPI2020M",[sel("ContentsCode",["00000804"]),sel("Tid",["1"],"top")]).then(function(d){ return d[d.length-1]; });
+    C.FI=pxLast("https://pxdata.stat.fi/PXWeb/api/v1/en/StatFin/khi/122p.px",[sel("contentscode",["Vuosimuutos"]),sel("timeperiod_m",["1"],"top")]).then(function(d){ return d[d.length-1]; });
+    C.DK=getText("https://api.statbank.dk/v1/data/PRIS01/CSV?VAREGR=000000&ENHED=300&Tid=*&lang=da").then(function(t){
+      var L=t.trim().split(/\r?\n/), c=L[L.length-1].split(";"), m=/^(\d{4})M(\d\d)$/.exec(c[2]);
+      return { v:parseFloat(c[3].replace(",",".")), m:m[1]+"-"+m[2] };
+    });
+    C.UK=getJ("https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7g7/mm23/data").then(function(j){
       var x=j.months[j.months.length-1], mo={JAN:"01",FEB:"02",MAR:"03",APR:"04",MAY:"05",JUN:"06",JUL:"07",AUG:"08",SEP:"09",OCT:"10",NOV:"11",DEC:"12"}, p=x.date.split(" ");
       return { v:parseFloat(x.value), m:p[0]+"-"+mo[p[1]] };
     });
-    var us=getJ("https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0").then(function(j){
+    C.US=getJ("https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0").then(function(j){
       var o={}; j.Results.series[0].data.forEach(function(d){ var v=parseFloat(d.value); if(/^M(0[1-9]|1[0-2])$/.test(d.period) && !isNaN(v)) o[d.year+"-"+d.period.slice(1)]=v; });
       var ks=Object.keys(o).sort();
       for(var i=ks.length-1;i>=0;i--){ var y=+ks[i].slice(0,4)-1, prev=y+ks[i].slice(4); if(o[prev]) return { v:r1((o[ks[i]]/o[prev]-1)*100), m:ks[i] }; }
       throw new Error("BLS");
     });
-    return Promise.allSettled([eu,uk,us]).then(function(r){
-      var o=r[0].status==="fulfilled"?r[0].value:{};
-      if(r[1].status==="fulfilled") o.UK=r[1].value;
-      if(r[2].status==="fulfilled") o.US=r[2].value;
+    var ks=Object.keys(C);
+    return Promise.allSettled(ks.map(function(k){ return C[k]; })).then(function(r){
+      var o={};
+      r.forEach(function(x,i){ if(x.status==="fulfilled" && x.value && !isNaN(x.value.v)) o[ks[i]]=x.value; });
       if(!Object.keys(o).length) throw new Error("enginn samanburður");
       return o;
     });
